@@ -88,7 +88,7 @@ class Handler(BaseHTTPRequestHandler):
             printc(body, "blue")
             string = body['text']
             res=self.gen.encode(string).tolist()
-            print_type("res",res)
+
             response = json.dumps({
                 'results': [{
                     'tokens':res
@@ -136,12 +136,7 @@ def _run_server(port: int, gen):
     server.serve_forever()
 
 def setup():
-    cwd = os.getcwd()
-    print(shared.tokenizer.bos_token,shared.tokenizer.eos_token)
 
-    print(shared.model.config)
-    print(shared.args)
-    printc((shared.settings), "yellow")
     gen =GuidanceGenerator()
 
     Thread(target=_run_server, args=[port,gen], daemon=True).start()
