@@ -30,6 +30,7 @@ class TokenHealingLogitsProcessor():
 
         # loop backwards through the prompt tokens looking for places where there are possible
         # extensions that cross the prompt boundary
+        self.model=model
         prefix_str = ""
         self.extension_tokens = []
         for i in range(len(prompt_ids)-1, max(len(prompt_ids)-10, -1), -1):
@@ -66,8 +67,6 @@ class TokenHealingLogitsProcessor():
             for i in range(len(self.extension_tokens)):
                 token_mask = torch.zeros(vocab_size)
                 token_mask.scatter_(0, torch.tensor(self.extension_tokens[i]), bias_value)
-                if model.device is not None:
-                    token_mask = token_mask.to(model.device)
                 self.token_masks.append(token_mask)
 
         self.num_extensions = 0
@@ -89,7 +88,17 @@ class TokenHealingLogitsProcessor():
             scores = torch.tensor(scores)
 
         # make only allowed tokens possible
-        return scores + self.token_masks[self.num_extensions-1]
+        # Check size mismatch and correct
+        if scores.shape[1] != self.token_masks[self.num_extensions-1].shape[0]:
+            scores = scores[:, :-1]
+
+        token_mask = self.token_masks[self.num_extensions-1].to(scores.device)
+        
+        res = (scores + token_mask )
+        # dg=(res).tolist()
+
+
+        return res
 # __call__ method 
 class BiasLogitsProcessor():
     """ Simple token biasing.
@@ -239,7 +248,9 @@ class RegexStoppingCriteria():
         all_done = True
         for i in range(len(self.current_strings)):
             found = False
+            print(self.current_strings)
             for s in self.stop_patterns:
+                
                 if s.search(str(self.current_strings[i])[self.prefix_length:]):
                     found = True
             if not found:

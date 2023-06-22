@@ -1,5 +1,6 @@
 from modules import shared
 from modules.text_generation import encode, generate_reply,decode
+from .util import build_parameters
 from typing import Any, Dict, Optional, Callable
 import os
 import time
@@ -13,7 +14,7 @@ import logging
 import transformers
 from .processor import TokenHealingLogitsProcessor,BiasLogitsProcessor,RegexLogitsProcessor, RegexStoppingCriteria
 from .caching import Cache, DiskCache
-        
+from .model_info import setup_model_data
 def printc(obj, color):
     color_code = {
         'black': '30', 'red': '31', 'green': '32', 'yellow': '33',
@@ -32,9 +33,13 @@ class GuidanceGenerator:
         self.llm_model = shared.model
         self._call_counts = {}
         self.tokenizer = shared.tokenizer
-        self.bos_token= shared.tokenizer.bos_token
-        self.eos_token= shared.tokenizer.eos_token
-        self.eos_token_id = self.token_to_id(shared.tokenizer.eos_token)
+        self.data= setup_model_data()
+
+        self.bos_token= self.data['bos_token']
+        self.eos_token= self.data['eos_token']
+        self.eos_token_id = self.token_to_id(self.data['eos_token'])
+        self.token_healing=True
+
         self.model_name = shared.args.model
         self.cache = DiskCache(llm_name=self.model_name)
         self.cache.clear()
@@ -42,6 +47,8 @@ class GuidanceGenerator:
         self._past_key_values = None
         self._prefix_cache = []
         self._token_prefix_map = self._build_token_prefix_map()
+        self.data['token_prefix_map_length']=len(self._token_prefix_map)
+        printc(self.data,"green")
 
     def id_to_token(self, id):
         return decode(int(id))
@@ -49,12 +56,18 @@ class GuidanceGenerator:
     def token_to_id(self, token):
         return encode(token)
 
-    def encode(self, token):
-        return encode(token)
+    def encode(self, string, as_list=True):
+        tmp= None
+        if as_list:
+            tmp= encode(string).tolist()[0]
+        else:
+            tmp= encode(string)
+        return tmp
+
+
+
     def decode(self, id):
-        print_type("id", id)
         tmp = decode(id)
-        print_type("decoded", tmp)
         return tmp
 
 
@@ -86,7 +99,6 @@ class GuidanceGenerator:
     def _cache_params(self, args_dict) -> Dict[str, Any]:
         """get the parameters for generating the cache key"""
         key = self._gen_key(args_dict)
-        printc(key,"cyan")
         # if we have non-zero temperature we include the call count in the cache key
         if args_dict.get("temperature", 0) > 0:
             args_dict["call_count"] = self._call_counts.get(key, 0)
@@ -112,25 +124,20 @@ class GuidanceGenerator:
         self._last_computed_key = key
 
 
-# ...
 
    
     def __call__(self, prompt, stop=None, stop_regex=None, temperature=None, n=1, max_tokens=1000, logprobs=None,top_p=1.0, echo=False, logit_bias=None, token_healing=None, pattern=None, stream=False,cache_seed=0, caching=None, **generate_kwargs):
         """ Generate a completion of the given prompt.
         """
-        if temperature is None:
-            temperature = temperature=0.001
-        # if token_healing is None:
-        #     token_healing = self.llm.token_healing
 
-        cache_params = self._cache_params({
+        args={
              "prompt":prompt, "stop": stop, "stop_regex":stop_regex, "temperature": temperature, "n":n, 
              "max_tokens":max_tokens, "logprobs":logprobs, "top_p":top_p, "echo":echo, "logit_bias":logit_bias, 
              "token_healing":token_healing, "pattern":pattern, "stream":stream, "cache_seed":cache_seed, 
              "caching":caching, "generate_kwargs":generate_kwargs, "model_name": self.model_name, 
              "cache_version":self.cache_version, "class_name":self.__class__.__name__
-        })
-        printc(cache_params,"cyan")
+        }
+        cache_params = self._cache_params(args)
         llm_cache = self.cache
         key = llm_cache.create_key(self.model_name, **cache_params)
         if stop is not None:
@@ -145,13 +152,12 @@ class GuidanceGenerator:
         stop_regex.append(regex.escape(self.eos_token)) # make sure the end of sequence token is always included
         
         input_ids= encode(prompt)
-        # print_type("input_ids __calll", input_ids)
         healed_token_ids = []
         processors = []
         stoppers = []
         coded_prompt = decode(input_ids[0])
         if token_healing:
-            healer = TokenHealingLogitsProcessor(self, model_config.vocab_size, input_ids[0])
+            healer = TokenHealingLogitsProcessor(self, self.tokenizer.vocab_size, input_ids[0])
             healed_token_ids = healer.healed_token_ids
             if len(healed_token_ids) > 0:
                 input_ids = input_ids[:,:-len(healed_token_ids)]
@@ -168,12 +174,13 @@ class GuidanceGenerator:
         prefix_match_len = 0
         if prefix_match_len == len(input_ids[0]):
             prefix_match_len -= 1
+            
         #may cause issues 
-        # if pattern is not None:
-        #     processors.append(RegexLogitsProcessor(pattern, stop_regex, self, self.tokenizer.vocab_size-1, temperature == 0, len(coded_prompt), self.eos_token_id))
+        if pattern is not None:
+            processors.append(RegexLogitsProcessor(pattern, stop_regex, self, self.tokenizer.vocab_size-1, temperature == 0, len(coded_prompt), self.eos_token_id))
 
-        # if stop_regex is not None:
-        #     stoppers.append(RegexStoppingCriteria(stop_regex, self, len(coded_prompt)))
+        if stop_regex is not None:
+            stoppers.append(RegexStoppingCriteria(stop_regex, self, len(coded_prompt)))
 
         streamer = TransformersStreamer(
             llm=self,
@@ -198,21 +205,44 @@ class GuidanceGenerator:
             return_dict_in_generate=True,
             **generate_kwargs
         )
-        print_type("generate_args ",generate_args)
+
         do_sample = True
         if do_sample is True and temperature == 0:
             generate_args["do_sample"] = False
         elif do_sample is False and temperature > 0:
             generate_args["do_sample"] = True
 
+        temperature = 0.005 if args['temperature'] == 0.0 else args['temperature']
+        body = {
+        'prompt': prompt,
+        'max_new_tokens': args['max_tokens'],
+        'do_sample': True,
+        'temperature': temperature,
+        'top_p': args['top_p']
+        }
+
+        print(body)
         printc("generating sequence","yellow")
-        generated_sequence = self.llm_model.generate(**generate_args)
-        printc("generating sequence","yellow")
-        streamer.put(generated_sequence)
+        prompt = body['prompt']
+        generate_params = build_parameters(body)
+        stopping_strings = generate_params.pop('stopping_strings')
+        generate_params['stream'] = False
+
+        generated_sequence = generate_reply(prompt, generate_params, stopping_strings=stopping_strings, is_chat=self.data['instruction_following'])
+
+
+        answer = ''
+        for a in generated_sequence:
+            answer = a
+            printc(answer,"yellow")
+        out = self.encode(answer, as_list=False)
+        streamer.put(out)
         self.cache[key] = streamer.__next__()
         self._update_prefix_cache(streamer)
-        printc(self.decode(generated_sequence.sequences[0]),"magenta")
+
         return llm_cache[key]
+
+        # return answer
     
 
 
@@ -374,7 +404,6 @@ class TransformersStreamer():
 
     def end(self):
 
-        # make sure we have flushed all of the data
         for i in range(len(self.input_ids)):
             assert self.str_pos[i] >= len(self.generated_string[i]), "Not all data was flushed, this means generation stopped for an unknown reason!"
         

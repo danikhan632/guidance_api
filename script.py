@@ -1,6 +1,6 @@
 import base64
 import json
-import os
+import os,sys
 import time
 import torch
 import requests
@@ -10,16 +10,15 @@ from threading import Thread
 from modules.utils import get_available_models
 from .guidance_gen import GuidanceGenerator
 import numpy as np
-
+from .tests import TestGuidanceGenerator
 import traceback
-
+import unittest
 from modules import shared
 
-
-port=9000
+port=9555
 def printc(obj, color):
     color_code = {
-        'black': '30', 'red': '31', 'green': '32', 'yellow': '33',
+        'black': '30', 'red': '34', 'green': '32', 'yellow': '33',
         'blue': '34', 'magenta': '35', 'cyan': '36', 'white': '37'
     }
     colored_text = f"\033[{color_code[color]}m{obj}\033[0m" if color in color_code else obj
@@ -37,9 +36,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == '/api/v1/model':
             self.send_response(200)
             self.end_headers()
-            response = json.dumps({
-                'result': shared.model_name
-            })
+
+                
+            response = json.dumps({"results":self.gen.data})
             self.wfile.write(response.encode('utf-8'))
         else:
             self.send_error(404)
@@ -54,7 +53,6 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             printc("Call request received, accuiring generation lock", "green")
             printc(body, "blue")
-            shared.generation_lock.acquire()
             res=""
             try:
                 res= self.gen.__call__(
@@ -62,14 +60,13 @@ class Handler(BaseHTTPRequestHandler):
                 temperature=body["temperature"], n=body["n"], max_tokens=body["max_tokens"], 
                 logprobs=body["logprobs"],top_p=body["top_p"], echo=body["echo"], logit_bias=body["logit_bias"],
                 token_healing=body["token_healing"], pattern=body["pattern"],stream=False,cache_seed=-1, 
-                caching=True,
+                caching=False,
                 )
                 printc(res, "green")
             except Exception as e:
                 printc("An error occurred: " + str(e), "red")
             finally:
-                printc("Call request fulfilled, releasing generation lock", "green")
-                shared.generation_lock.release()
+                print("Call request fulfilled, releasing generation lock")
 
 
             response = json.dumps({
@@ -87,7 +84,7 @@ class Handler(BaseHTTPRequestHandler):
             printc("Encode request received", "green")
             printc(body, "blue")
             string = body['text']
-            res=self.gen.encode(string).tolist()
+            res=self.gen.encode(string)
 
             response = json.dumps({
                 'results': [{
@@ -103,11 +100,8 @@ class Handler(BaseHTTPRequestHandler):
             printc("decode request received", "green")
             printc(body, "blue")
             tokens = (body['tokens'])
-            print_type("my tokens",tokens)
-            decoded_sequences = ''
-            for sublist in tokens:
-                decoded_sequence = self.gen.decode(sublist)
-                decoded_sequences+=(decoded_sequence)
+            print("my tokens",tokens, type(tokens))
+            decoded_sequences =self.gen.decode(tokens)
             response = json.dumps({
                 'results': [{
                     'ids': decoded_sequences
@@ -136,7 +130,7 @@ def _run_server(port: int, gen):
     server.serve_forever()
 
 def setup():
-
+    printc("starting guidance server","green")
     gen =GuidanceGenerator()
 
     Thread(target=_run_server, args=[port,gen], daemon=True).start()
