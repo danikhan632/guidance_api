@@ -10,7 +10,7 @@ from threading import Thread
 from modules.utils import get_available_models
 from .guidance_gen import GuidanceGenerator
 import numpy as np
-from .tests import TestGuidanceGenerator
+
 import traceback
 import unittest
 from modules import shared
