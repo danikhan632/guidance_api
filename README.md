@@ -37,7 +37,7 @@ import guidance
 import json,requests
 import re,sys
 
-guidance.llm = guidance.llms.TGWUI("http://127.0.0.1:9000")
+guidance.llm = guidance.llms.TGWUI("http://127.0.0.1:9555")
 
 character_maker = guidance("""The following is a character profile for an RPG game in JSON format.
 ```json
